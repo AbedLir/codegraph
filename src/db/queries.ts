@@ -185,6 +185,10 @@ export class QueryBuilder {
   // Node cache for frequently accessed nodes (LRU-style, max 1000 entries)
   private nodeCache: Map<string, Node> = new Map();
   private readonly maxCacheSize = 1000;
+  private dominantFileCache:
+    | { filePath: string; edgeCount: number; nextEdgeCount: number }
+    | null
+    | undefined;
 
   // Prepared statements (lazily initialized)
   private stmts: {
@@ -525,6 +529,7 @@ export class QueryBuilder {
    */
   clearCache(): void {
     this.nodeCache.clear();
+    this.dominantFileCache = undefined;
   }
 
   /**
@@ -559,6 +564,10 @@ export class QueryBuilder {
    * boosting a test file's directory would be a misfire.
    */
   getDominantFile(): { filePath: string; edgeCount: number; nextEdgeCount: number } | null {
+    if (this.dominantFileCache !== undefined) {
+      return this.dominantFileCache;
+    }
+
     if (!this.stmts.getDominantFile) {
       // Pull top 20 candidates; we then filter out test/generated files
       // in code (regex-grade matching that SQL LIKE can't express). The
@@ -580,12 +589,16 @@ export class QueryBuilder {
     }
     const rows = this.stmts.getDominantFile.all() as Array<{ file_path: string; edge_count: number }>;
     const filtered = rows.filter(r => !isLowValueFile(r.file_path));
-    if (filtered.length === 0 || filtered[0]!.edge_count < 20) return null;
-    return {
+    if (filtered.length === 0 || filtered[0]!.edge_count < 20) {
+      this.dominantFileCache = null;
+      return this.dominantFileCache;
+    }
+    this.dominantFileCache = {
       filePath: filtered[0]!.file_path,
       edgeCount: filtered[0]!.edge_count,
       nextEdgeCount: filtered[1]?.edge_count ?? 0,
     };
+    return this.dominantFileCache;
   }
 
   /**

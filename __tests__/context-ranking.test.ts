@@ -186,4 +186,26 @@ export function downloadDataset(name: string): string { return name; }
     const md = await cg.buildContext('CaptureIntroScreen', { format: 'markdown' });
     expect(md as string).not.toContain(LOW_CONFIDENCE_MARKER);
   });
+
+  it('does not run dominant-file detection for a focused exact symbol query', async () => {
+    const queries = (cg as any).queries;
+    const original = queries.getDominantFile.bind(queries);
+    let calls = 0;
+    queries.getDominantFile = () => {
+      calls++;
+      return {
+        filePath: 'scripts/dataset/download.ts',
+        edgeCount: 1000,
+        nextEdgeCount: 0,
+      };
+    };
+
+    try {
+      const sg = await cg.findRelevantContext('CaptureIntroScreen');
+      expect(sg.confidence).toBe('high');
+      expect(calls).toBe(0);
+    } finally {
+      queries.getDominantFile = original;
+    }
+  });
 });

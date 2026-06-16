@@ -174,6 +174,53 @@ describe('insertEdges endpoint validation', () => {
   });
 });
 
+describe('getDominantFile cache', () => {
+  let dir: string;
+  let db: DatabaseConnection;
+  let q: QueryBuilder;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'db-perf-dominant-'));
+    db = DatabaseConnection.initialize(path.join(dir, 'test.db'));
+    q = new QueryBuilder(db.getDb());
+  });
+
+  afterEach(() => {
+    db.close();
+    if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('reuses the computed dominant file within one QueryBuilder instance', () => {
+    const nodes = Array.from({ length: 25 }, (_, i) => makeNode(`n${i}`, `n${i}`));
+    q.insertNodes(nodes);
+    q.insertEdges(
+      Array.from({ length: 24 }, (_, i) => ({
+        source: `n${i}`,
+        target: `n${i + 1}`,
+        kind: 'calls' as const,
+      }))
+    );
+
+    let dominantQueryExecutions = 0;
+    const originalPrepare = db.getDb().prepare.bind(db.getDb());
+    (db.getDb() as any).prepare = (sql: string) => {
+      const stmt = originalPrepare(sql);
+      if (sql.includes('GROUP BY n.file_path') && sql.includes('ORDER BY edge_count DESC')) {
+        const originalAll = stmt.all.bind(stmt);
+        stmt.all = (...args: unknown[]) => {
+          dominantQueryExecutions++;
+          return originalAll(...args);
+        };
+      }
+      return stmt;
+    };
+
+    expect(q.getDominantFile()?.filePath).toBe('a.ts');
+    expect(q.getDominantFile()?.filePath).toBe('a.ts');
+    expect(dominantQueryExecutions).toBe(1);
+  });
+});
+
 describe('runMaintenance', () => {
   let dir: string;
   let db: DatabaseConnection;

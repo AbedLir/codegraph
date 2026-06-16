@@ -660,23 +660,25 @@ export class ContextBuilder {
     // results that share a directory prefix with the dominant file's
     // directory so the core file's siblings outrank sibling-package
     // extensions.
-    try {
-      const dominant = this.queries.getDominantFile?.();
-      if (dominant && dominant.edgeCount >= 3 * dominant.nextEdgeCount) {
-        // Take the directory of the dominant file (everything up to the
-        // last slash). For `lib/sinatra/base.rb` → `lib/sinatra/`.
-        const slash = dominant.filePath.lastIndexOf('/');
-        if (slash > 0) {
-          const coreDir = dominant.filePath.slice(0, slash + 1);
-          for (const result of searchResults) {
-            if (result.node.filePath.startsWith(coreDir)) {
-              result.score += 25;
+    if (!focusedSymbolQuery) {
+      try {
+        const dominant = this.queries.getDominantFile?.();
+        if (dominant && dominant.edgeCount >= 3 * dominant.nextEdgeCount) {
+          // Take the directory of the dominant file (everything up to the
+          // last slash). For `lib/sinatra/base.rb` → `lib/sinatra/`.
+          const slash = dominant.filePath.lastIndexOf('/');
+          if (slash > 0) {
+            const coreDir = dominant.filePath.slice(0, slash + 1);
+            for (const result of searchResults) {
+              if (result.node.filePath.startsWith(coreDir)) {
+                result.score += 25;
+              }
             }
           }
         }
+      } catch {
+        // SQL failure — fall through, scoring works without the boost
       }
-    } catch {
-      // SQL failure — fall through, scoring works without the boost
     }
 
     // Step 5a: Multi-term co-occurrence re-ranking (applied BEFORE truncation).
