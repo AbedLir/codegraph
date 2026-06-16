@@ -132,6 +132,12 @@ function extractSymbolsFromQuery(query: string): string[] {
   return Array.from(symbols).filter(s => !commonWords.has(s.toLowerCase()));
 }
 
+function isFocusedSymbolQuery(query: string): boolean {
+  const trimmed = query.trim();
+  if (!trimmed || /\s/.test(trimmed)) return false;
+  return /^[A-Za-z_$][A-Za-z0-9_$]*(?:(?:\.|::|\/)[A-Za-z_$][A-Za-z0-9_$]*)*$/.test(trimmed);
+}
+
 /**
  * Default options for context building
  *
@@ -445,6 +451,19 @@ export class ContextBuilder {
       return { nodes, edges, roots };
     }
 
+    const searchCache = new Map<string, SearchResult[]>();
+    const cachedSearchNodes = (
+      searchQuery: string,
+      searchOptions?: Parameters<QueryBuilder['searchNodes']>[1],
+    ): SearchResult[] => {
+      const key = JSON.stringify([searchQuery, searchOptions ?? {}]);
+      const cached = searchCache.get(key);
+      if (cached) return cached;
+      const result = this.queries.searchNodes(searchQuery, searchOptions);
+      searchCache.set(key, result);
+      return result;
+    };
+
     // === HYBRID SEARCH ===
 
     // Step 1: Extract potential symbol names from query
@@ -491,11 +510,13 @@ export class ContextBuilder {
       }
     }
 
+    const focusedSymbolQuery = isFocusedSymbolQuery(query) && exactMatches.length > 0;
+
     // Step 2b: Search for extracted symbols as definition (class/interface) prefixes.
     // When the user writes "REST", "bulk", or "allocation", they usually mean classes
     // like RestController, BulkRequest, AllocationService — not nodes named exactly that.
     // Also tries stem variants: "caching" → "cache" finds Cache, CacheBuilder.
-    if (symbolsFromQuery.length > 0) {
+    if (symbolsFromQuery.length > 0 && !focusedSymbolQuery) {
       const definitionKinds: NodeKind[] = ['class', 'interface', 'struct', 'trait',
         'protocol', 'enum', 'type_alias'];
       // Expand symbols with stem variants for broader definition matching
@@ -510,7 +531,7 @@ export class ContextBuilder {
         const titleCased = sym.charAt(0).toUpperCase() + sym.slice(1).toLowerCase();
         if (titleCased === sym) continue; // already title-case (e.g., "Engine") — handled by exact match
         // Fetch more results since popular prefixes have many matches
-        const prefixResults = this.queries.searchNodes(titleCased, {
+        const prefixResults = cachedSearchNodes(titleCased, {
           limit: 30,
           kinds: definitionKinds,
         });
@@ -541,48 +562,50 @@ export class ContextBuilder {
     // which is critical for template-heavy codebases (e.g., Liquid/Shopify themes)
     // where file names are the primary identifiers.
     let textResults: SearchResult[] = [];
-    try {
-      const searchTerms = extractSearchTerms(query);
-      if (searchTerms.length > 0) {
-        // Search each term individually to get broader coverage,
-        // then boost results that match multiple terms
-        const termResultsMap = new Map<string, { result: SearchResult; termHits: number }>();
-        // When no explicit kind filter is set, exclude imports — they flood FTS
-        // results with qualified name matches (e.g., "REST" matches 445K import paths)
-        // but are almost never what exploration queries want.
-        const searchKinds = opts.nodeKinds && opts.nodeKinds.length > 0
-          ? opts.nodeKinds
-          : ['file', 'module', 'class', 'struct', 'interface', 'trait', 'protocol',
-             'function', 'method', 'property', 'field', 'variable', 'constant',
-             'enum', 'enum_member', 'type_alias', 'namespace', 'export',
-             'route', 'component'] as NodeKind[];
-        for (const term of searchTerms) {
-          const termResults = this.queries.searchNodes(term, {
-            limit: opts.searchLimit * 2,
-            kinds: searchKinds,
-          });
-          for (const r of termResults) {
-            const existing = termResultsMap.get(r.node.id);
-            if (existing) {
-              existing.termHits++;
-              existing.result.score = Math.max(existing.result.score, r.score);
-            } else {
-              termResultsMap.set(r.node.id, { result: r, termHits: 1 });
+    if (!focusedSymbolQuery) {
+      try {
+        const searchTerms = extractSearchTerms(query);
+        if (searchTerms.length > 0) {
+          // Search each term individually to get broader coverage,
+          // then boost results that match multiple terms
+          const termResultsMap = new Map<string, { result: SearchResult; termHits: number }>();
+          // When no explicit kind filter is set, exclude imports — they flood FTS
+          // results with qualified name matches (e.g., "REST" matches 445K import paths)
+          // but are almost never what exploration queries want.
+          const searchKinds = opts.nodeKinds && opts.nodeKinds.length > 0
+            ? opts.nodeKinds
+            : ['file', 'module', 'class', 'struct', 'interface', 'trait', 'protocol',
+               'function', 'method', 'property', 'field', 'variable', 'constant',
+               'enum', 'enum_member', 'type_alias', 'namespace', 'export',
+               'route', 'component'] as NodeKind[];
+          for (const term of searchTerms) {
+            const termResults = cachedSearchNodes(term, {
+              limit: opts.searchLimit * 2,
+              kinds: searchKinds,
+            });
+            for (const r of termResults) {
+              const existing = termResultsMap.get(r.node.id);
+              if (existing) {
+                existing.termHits++;
+                existing.result.score = Math.max(existing.result.score, r.score);
+              } else {
+                termResultsMap.set(r.node.id, { result: r, termHits: 1 });
+              }
             }
           }
+          // Boost results matching multiple terms and sort
+          textResults = Array.from(termResultsMap.values())
+            .map(({ result, termHits }) => ({
+              ...result,
+              score: result.score + (termHits - 1) * 5,
+            }))
+            .sort((a, b) => b.score - a.score)
+            .slice(0, opts.searchLimit * 2);
         }
-        // Boost results matching multiple terms and sort
-        textResults = Array.from(termResultsMap.values())
-          .map(({ result, termHits }) => ({
-            ...result,
-            score: result.score + (termHits - 1) * 5,
-          }))
-          .sort((a, b) => b.score - a.score)
-          .slice(0, opts.searchLimit * 2);
+        logDebug('Text search results', { count: textResults.length });
+      } catch (error) {
+        logDebug('Text search failed', { query, error: String(error) });
       }
-      logDebug('Text search results', { count: textResults.length });
-    } catch (error) {
-      logDebug('Text search failed', { query, error: String(error) });
     }
 
     // Step 4: Merge results, taking the max score when duplicates appear
@@ -746,7 +769,7 @@ export class ContextBuilder {
     // FTS can't find "Search" inside "TransportSearchAction" (one FTS token).
     // LIKE reliably finds these substring matches. Results are appended with
     // guaranteed slots so they don't compete with higher-scoring prefix matches.
-    if (symbolsFromQuery.length > 0) {
+    if (symbolsFromQuery.length > 0 && !focusedSymbolQuery) {
       const camelDefinitionKinds: NodeKind[] = ['class', 'interface', 'struct', 'trait',
         'protocol', 'enum', 'type_alias'];
       const camelSearchedTerms = new Set<string>();

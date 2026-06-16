@@ -673,6 +673,7 @@ export class ToolHandler {
   // once and every later tool call reuses the result — never shelling out to
   // git on the hot path. `undefined` = not computed yet; `null` = no mismatch.
   private worktreeMismatchCache: Map<string, WorktreeIndexMismatch | null> = new Map();
+  private fileCountCache: Map<string, number> = new Map();
   // Gate that the MCP engine pokes after `cg.open()` so the first tool call
   // blocks on the post-open filesystem reconcile (catch-up sync). Without
   // this, a tool call that races past `catchUpSync()` serves rows for files
@@ -689,6 +690,7 @@ export class ToolHandler {
    */
   setDefaultCodeGraph(cg: CodeGraph): void {
     this.cg = cg;
+    this.fileCountCache.clear();
   }
 
   /**
@@ -756,8 +758,8 @@ export class ToolHandler {
     if (!this.cg) return visible;
 
     try {
-      const stats = this.cg.getStats();
-      const budget = getExploreBudget(stats.fileCount);
+      const fileCount = this.getFileCount(this.cg);
+      const budget = getExploreBudget(fileCount);
 
       // Tiny-repo tool gating: on projects under TINY_REPO_FILE_THRESHOLD
       // files, only expose the core trio (search, node, explore) — one
@@ -788,7 +790,7 @@ export class ToolHandler {
         'codegraph_search',
         'codegraph_node',
       ]);
-      if (stats.fileCount < TINY_REPO_FILE_THRESHOLD) {
+      if (fileCount < TINY_REPO_FILE_THRESHOLD) {
         visible = visible.filter(t => TINY_REPO_CORE_TOOLS.has(t.name));
       }
 
@@ -796,7 +798,7 @@ export class ToolHandler {
         if (tool.name === 'codegraph_explore') {
           return {
             ...tool,
-            description: `${tool.description} Budget: make at most ${budget} calls for this project (${stats.fileCount.toLocaleString()} files indexed).`,
+            description: `${tool.description} Budget: make at most ${budget} calls for this project (${fileCount.toLocaleString()} files indexed).`,
           };
         }
         return tool;
@@ -900,6 +902,16 @@ export class ToolHandler {
     }
     this.projectCache.clear();
     this.worktreeMismatchCache.clear();
+    this.fileCountCache.clear();
+  }
+
+  private getFileCount(cg: CodeGraph): number {
+    const root = cg.getProjectRoot();
+    const cached = this.fileCountCache.get(root);
+    if (cached !== undefined) return cached;
+    const count = cg.getFileCount();
+    this.fileCountCache.set(root, count);
+    return count;
   }
 
   /**
@@ -2023,7 +2035,7 @@ export class ToolHandler {
     // pre-#185 behavior for callers that hit the rare stats failure.
     let budget: ExploreOutputBudget;
     try {
-      budget = getExploreOutputBudget(cg.getStats().fileCount);
+      budget = getExploreOutputBudget(this.getFileCount(cg));
     } catch {
       budget = getExploreOutputBudget(Infinity);
     }
@@ -2942,10 +2954,10 @@ export class ToolHandler {
     // Add explore budget note based on project size
     if (budget.includeBudgetNote) {
       try {
-        const stats = cg.getStats();
-        const callBudget = getExploreBudget(stats.fileCount);
+        const fileCount = this.getFileCount(cg);
+        const callBudget = getExploreBudget(fileCount);
         lines.push('');
-        lines.push(`> **Explore budget: ${callBudget} calls for this project (${stats.fileCount.toLocaleString()} files indexed).** Each call covers ~6 files; if your question spans more, spend your remaining calls on the uncovered area BEFORE falling back to Read — another explore is cheaper and more complete than reading those files. Synthesize once you've used ${callBudget}.`);
+        lines.push(`> **Explore budget: ${callBudget} calls for this project (${fileCount.toLocaleString()} files indexed).** Each call covers ~6 files; if your question spans more, spend your remaining calls on the uncovered area BEFORE falling back to Read — another explore is cheaper and more complete than reading those files. Synthesize once you've used ${callBudget}.`);
       } catch {
         // Stats unavailable — skip budget note
       }

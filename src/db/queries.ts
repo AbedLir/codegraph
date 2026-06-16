@@ -831,8 +831,8 @@ export class QueryBuilder {
       const maxFtsScore = Math.max(...results.map(r => r.score));
       const terms = query.split(/\s+/).filter(t => t.length >= 2);
       for (const term of terms) {
-        let sql = 'SELECT * FROM nodes WHERE name = ? COLLATE NOCASE';
-        const params: (string | number)[] = [term];
+        let sql = 'SELECT * FROM nodes WHERE lower(name) = ?';
+        const params: (string | number)[] = [term.toLowerCase()];
         if (kinds && kinds.length > 0) {
           sql += ` AND kind IN (${kinds.map(() => '?').join(',')})`;
           params.push(...kinds);
@@ -1133,8 +1133,8 @@ export class QueryBuilder {
     // Pass 1: Find files containing each queried name, identify distinctive names
     const nameToFiles = new Map<string, Set<string>>();
     for (const name of names) {
-      let sql = 'SELECT DISTINCT file_path FROM nodes WHERE name COLLATE NOCASE = ?';
-      const params: (string | number)[] = [name];
+      let sql = 'SELECT DISTINCT file_path FROM nodes WHERE lower(name) = ?';
+      const params: (string | number)[] = [name.toLowerCase()];
       if (kinds && kinds.length > 0) {
         sql += ` AND kind IN (${kinds.map(() => '?').join(',')})`;
         params.push(...kinds);
@@ -1161,9 +1161,9 @@ export class QueryBuilder {
       let sql = `
         SELECT nodes.*, 1.0 as score
         FROM nodes
-        WHERE name COLLATE NOCASE = ?
+        WHERE lower(name) = ?
       `;
-      const params: (string | number)[] = [name];
+      const params: (string | number)[] = [name.toLowerCase()];
 
       if (kinds && kinds.length > 0) {
         sql += ` AND kind IN (${kinds.map(() => '?').join(',')})`;
@@ -1746,6 +1746,11 @@ export class QueryBuilder {
   /**
    * Get graph statistics
    */
+  getFileCount(): number {
+    const row = this.db.prepare('SELECT COUNT(*) as count FROM files').get() as { count: number };
+    return row.count;
+  }
+
   getStats(): GraphStats {
     // Single query for all three aggregate counts
     const counts = this.db.prepare(`

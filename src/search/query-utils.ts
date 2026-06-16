@@ -8,6 +8,22 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { Node } from '../types';
 
+const MAX_QUERY_UTIL_CACHE_SIZE = 5000;
+const searchTermsCache = new Map<string, string[]>();
+const pathRelevanceCache = new Map<string, number>();
+
+function cacheGetOrSet<T>(cache: Map<string, T>, key: string, factory: () => T): T {
+  const cached = cache.get(key);
+  if (cached !== undefined) return cached;
+  const value = factory();
+  if (cache.size >= MAX_QUERY_UTIL_CACHE_SIZE) {
+    const firstKey = cache.keys().next().value;
+    if (firstKey !== undefined) cache.delete(firstKey);
+  }
+  cache.set(key, value);
+  return value;
+}
+
 /** Normalize a name to a comparable token: lowercase, alphanumerics only. */
 export function normalizeNameToken(raw: string): string {
   return raw.toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -155,6 +171,11 @@ export function getStemVariants(term: string): string[] {
  */
 export function extractSearchTerms(query: string, options?: { stems?: boolean }): string[] {
   const includeStems = options?.stems !== false;
+  const cacheKey = `${includeStems ? '1' : '0'}\0${query}`;
+  return cacheGetOrSet(searchTermsCache, cacheKey, () => extractSearchTermsUncached(query, includeStems));
+}
+
+function extractSearchTermsUncached(query: string, includeStems: boolean): string[] {
   const tokens = new Set<string>();
 
   // First, extract and preserve compound identifiers before splitting
@@ -219,6 +240,19 @@ export function extractSearchTerms(query: string, options?: { stems?: boolean })
  * Higher score = more relevant path
  */
 export function scorePathRelevance(
+  filePath: string,
+  query: string,
+  projectNameTokens?: Set<string>,
+): number {
+  const projectKey = projectNameTokens ? [...projectNameTokens].sort().join(',') : '';
+  return cacheGetOrSet(
+    pathRelevanceCache,
+    `${query}\0${filePath}\0${projectKey}`,
+    () => scorePathRelevanceUncached(filePath, query, projectNameTokens),
+  );
+}
+
+function scorePathRelevanceUncached(
   filePath: string,
   query: string,
   projectNameTokens?: Set<string>,

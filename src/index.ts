@@ -723,6 +723,10 @@ export class CodeGraph {
   /**
    * Get statistics about the knowledge graph
    */
+  getFileCount(): number {
+    return this.queries.getFileCount();
+  }
+
   getStats(): GraphStats {
     const stats = this.queries.getStats();
     stats.dbSizeBytes = this.db.getSize();
